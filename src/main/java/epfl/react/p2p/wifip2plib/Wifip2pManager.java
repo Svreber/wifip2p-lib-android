@@ -12,9 +12,13 @@ import android.net.wifi.p2p.WifiP2pManager;
 import android.net.wifi.p2p.WifiP2pDevice;
 import android.net.wifi.WpsInfo;
 
+import android.os.AsyncTask;
 import android.util.Log;
 
+import java.io.InputStreamReader;
+import java.io.PrintWriter;
 import java.net.InetSocketAddress;
+import java.net.ServerSocket;
 import java.net.Socket;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -26,10 +30,12 @@ import java.nio.charset.Charset;
  * Created by quarta on 3/3/15.
  */
 public class Wifip2pManager implements WifiP2pManager.ChannelListener {
+    private static final int SOCKET_PORT = 4444;
     private static final int SOCKET_TIMEOUT = 5000;
     private WifiP2pManager manager;
     private WifiP2pManager.Channel channel;
     private Wifip2pListener p2pListener;
+    private Boolean mustListen = false;
 
 
     public void init(Context context, Wifip2pListener listener) {
@@ -53,6 +59,7 @@ public class Wifip2pManager implements WifiP2pManager.ChannelListener {
         intentFilter.addAction(WifiP2pManager.WIFI_P2P_THIS_DEVICE_CHANGED_ACTION);
 
         this.p2pListener = listener;
+        this.mustListen = true;
         this.manager = (WifiP2pManager) context.getSystemService(Context.WIFI_P2P_SERVICE);
         this.channel = this.manager.initialize(context, context.getMainLooper(), null);
         Wifip2pBroadcastReceiver broadcastManager = new Wifip2pBroadcastReceiver(this.manager, this.channel, listener);
@@ -62,6 +69,10 @@ public class Wifip2pManager implements WifiP2pManager.ChannelListener {
 
     public void discover() {
         this.manager.discoverPeers(this.channel, this.p2pListener.discoveryListener);
+    }
+
+    public void deconnect() {
+        this.mustListen = false;
     }
 
     public void connect(WifiP2pDevice device, WifiP2pManager.ActionListener actionListener) {
@@ -76,11 +87,9 @@ public class Wifip2pManager implements WifiP2pManager.ChannelListener {
     public void sendData(WifiP2pDevice device, String data) {
         String host = device.deviceAddress;
         Socket socket = new Socket();
-        int port = 0;//TODO: intent.getExtras().getInt(EXTRAS_GROUP_OWNER_PORT);
 
         try {
-            socket.bind(null);
-            socket.connect((new InetSocketAddress(host, port)), SOCKET_TIMEOUT);
+            socket.connect((new InetSocketAddress(host, SOCKET_PORT)), SOCKET_TIMEOUT);
 
             OutputStream stream = socket.getOutputStream();
 
@@ -100,6 +109,55 @@ public class Wifip2pManager implements WifiP2pManager.ChannelListener {
                 }
             }
         }
+    }
+
+    public void listen(final DataListener listener) {
+        new AsyncTask<DataListener, Void, Void>() {
+            @Override
+            public Void doInBackground(DataListener... params) {
+                while(mustListen) {
+                    try {
+
+                        ServerSocket serverSocket = new ServerSocket(SOCKET_PORT);
+                        final Socket clientSocket = serverSocket.accept();
+                        Log.i("StandardLog", "Got request");
+                        new AsyncTask<SocketDataListener, Void, Void>() {
+                            @Override
+                            public Void doInBackground(SocketDataListener... params) {
+                                Socket socket = params[0].getSocket();
+                                DataListener listener = params[0].getDataListener();
+                                try {
+                                    Log.i("StandardLog", "Got connection from client");
+                                    PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
+                                    InputStreamReader in = new InputStreamReader(socket.getInputStream());
+
+                                    int size = in.read();
+
+                                    if (size > 0) {
+                                        char[] array = new char[size];
+
+                                        in.read(array);
+
+                                        listener.onDataReceived(null, new String(array));
+                                    }
+                                } catch (IOException e) {
+                                    e.printStackTrace();
+                                }
+
+                                return null;
+                            }
+                        }.execute(new SocketDataListener(clientSocket, listener));
+
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
+
+                }
+
+                return null;
+            }
+
+        }.execute(listener);
     }
 
     @Override
